@@ -1,0 +1,552 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Heart,
+  MessageCircle,
+  Send,
+  Bookmark,
+  MoreHorizontal,
+  Play,
+  Camera,
+  Settings,
+  CheckCircle
+} from 'lucide-react';
+
+/**
+ * InstagramClone (محسّن)
+ * - تحسين تخزين محلي وآمان
+ * - حماية ضد null user
+ * - حفظ تلقائي للمحتوى
+ * - دوال مساعدة لوقت النشر و localStorage
+ *
+ * ملاحظة أمنيّة: ضع كلمة مرور الأدمن في env: REACT_APP_ADMIN_PASSWORD
+ * (create-react-app uses REACT_APP_ prefix)
+ */
+
+const safeGet = (key, fallback = null) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    console.warn('localStorage read failed for', key, e);
+    return fallback;
+  }
+};
+
+const safeSet = (key, value) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn('localStorage write failed for', key, e);
+  }
+};
+
+const ADMIN_PASSWORD = process.env.REACT_APP_ADMIN_PASSWORD || 'admin123';
+if (ADMIN_PASSWORD === 'admin123') {
+  // تحذير فقط أثناء التطوير إن لم يتم تعيين env var
+  // لا تكشف كلمة المرور الحقيقية في الشيفرة في مشروع حقيقي.
+  console.warn('Using fallback ADMIN_PASSWORD - set REACT_APP_ADMIN_PASSWORD in env for production.');
+}
+
+const timeAgo = (isoDate) => {
+  if (!isoDate) return 'الآن';
+  const seconds = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
+  const intervals = [
+    { label: 'سنة', secs: 31536000 },
+    { label: 'شهر', secs: 2592000 },
+    { label: 'يوم', secs: 86400 },
+    { label: 'ساعة', secs: 3600 },
+    { label: 'دقيقة', secs: 60 },
+  ];
+  for (let i = 0; i < intervals.length; i++) {
+    const v = Math.floor(seconds / intervals[i].secs);
+    if (v >= 1) return `${v} ${intervals[i].label}${v > 1 ? '' : ''} مضت`;
+  }
+  return 'الآن';
+};
+
+const FallbackImage = ({ className }) => (
+  <div className={className + ' bg-gray-800 flex items-center justify-center text-2xl'}>📷</div>
+);
+
+// داخل ملف واحد: مكونات صغيرة
+const IconButton = ({ children, onClick, title }) => (
+  <button onClick={onClick} title={title} className="focus:outline-none">
+    {children}
+  </button>
+);
+
+const InstagramClone = () => {
+  // User & auth
+  const [currentUser, setCurrentUser] = useState(() => safeGet('currentUser', null));
+  const [loginStep, setLoginStep] = useState('email'); // 'email' | 'code' | 'register' | 'login'
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [generatedCode, setGeneratedCode] = useState('');
+
+  // Data
+  const [allPosts, setAllPosts] = useState(() => safeGet('allPosts', []));
+  const [allReels, setAllReels] = useState(() => safeGet('allReels', []));
+  const [activeTab, setActiveTab] = useState('home'); // 'home' | 'reels' | 'add' | 'profile'
+  const [newPost, setNewPost] = useState({ caption: '', image: '', type: 'post' });
+  const [showSettings, setShowSettings] = useState(false);
+  const [verifyUsername, setVerifyUsername] = useState('');
+  const [adminPass, setAdminPass] = useState('');
+
+  // Load users presence early (not in effect loop)
+  const allUsers = safeGet('allUsers', []);
+
+  // persist posts/reels whenever they change
+  useEffect(() => safeSet('allPosts', allPosts), [allPosts]);
+  useEffect(() => safeSet('allReels', allReels), [allReels]);
+
+  // ensure currentUser is consistent with stored users (if deleted or updated)
+  useEffect(() => {
+    const stored = safeGet('currentUser', null);
+    if (stored) {
+      setCurrentUser(stored);
+    }
+  }, []);
+
+  // helper: generate verification code and move to code step
+  const handleSendCode = useCallback(() => {
+    if (!email) {
+      window.alert('ادخل البريد الإلكتروني أولا');
+      return;
+    }
+    const generated = Math.floor(100000 + Math.random() * 900000).toString();
+    setGeneratedCode(generated);
+    // تحذير: في تطبيق حقيقي ترسل بالإيميل وليس alert
+    window.alert(`تم إرسال الكود إلى ${email}\nالكود: ${generated}`);
+    setLoginStep('code');
+  }, [email]);
+
+  const handleVerifyCode = useCallback(() => {
+    if (code.trim() === generatedCode) {
+      setLoginStep('register');
+    } else {
+      window.alert('الكود خاطئ، حاول مرة أخرى');
+    }
+  }, [code, generatedCode]);
+
+  const handleRegister = useCallback(() => {
+    if (!username || !password) {
+      window.alert('اكمل اسم المستخدم وكلمة المرور');
+      return;
+    }
+    const users = safeGet('allUsers', []);
+    if (users.some(u => u.username === username)) {
+      window.alert('اسم المستخدم موجود مسبقا');
+      return;
+    }
+    const newUser = {
+      id: Date.now(),
+      email,
+      username,
+      password,
+      verified: false,
+      createdAt: new Date().toISOString()
+    };
+    users.push(newUser);
+    safeSet('allUsers', users);
+    safeSet('currentUser', newUser);
+    setCurrentUser(newUser);
+    setLoginStep('login');
+    // load content (already in state from localStorage)
+  }, [email, username, password]);
+
+  const handleLogin = useCallback(() => {
+    if (!username || !password) {
+      window.alert('اكتب اسم المستخدم وكلمة المرور');
+      return;
+    }
+    const users = safeGet('allUsers', []);
+    const user = users.find(u => u.username === username && u.password === password);
+    if (user) {
+      safeSet('currentUser', user);
+      setCurrentUser(user);
+      setLoginStep('login');
+    } else {
+      window.alert('اسم المستخدم أو كلمة المرور خاطئة');
+    }
+  }, [username, password]);
+
+  const handleLogout = useCallback(() => {
+    if (!window.confirm('هل تريد تسجيل الخروج؟')) return;
+    safeSet('currentUser', null);
+    localStorage.removeItem('currentUser');
+    setCurrentUser(null);
+    setActiveTab('home');
+    setShowSettings(false);
+  }, []);
+
+  const handleVerifyUser = useCallback(() => {
+    if (adminPass !== ADMIN_PASSWORD) {
+      window.alert('كلمة مرور الأدمن خاطئة!');
+      return;
+    }
+    const users = safeGet('allUsers', []);
+    const idx = users.findIndex(u => u.username === verifyUsername);
+    if (idx === -1) {
+      window.alert('المستخدم غير موجود!');
+      return;
+    }
+    users[idx].verified = !users[idx].verified;
+    safeSet('allUsers', users);
+
+    // تحديث currentUser لو هو نفس الشخص
+    if (currentUser?.username === verifyUsername) {
+      safeSet('currentUser', users[idx]);
+      setCurrentUser(users[idx]);
+    }
+
+    window.alert(`تم ${users[idx].verified ? 'توثيق' : 'إلغاء توثيق'} الحساب @${verifyUsername}`);
+    setVerifyUsername('');
+    setAdminPass('');
+  }, [adminPass, verifyUsername, currentUser]);
+
+  // Likes handling with safe guards
+  const handleLike = useCallback((id, type) => {
+    if (!currentUser) {
+      window.alert('سجّل الدخول أولاً للقيام بهذه العملية');
+      return;
+    }
+    const likeKey = `${currentUser.username}_likes`;
+    const userLikes = safeGet(likeKey, {});
+    const isLiked = !!userLikes[id];
+
+    if (type === 'post') {
+      const updated = allPosts.map(p => (p.id === id ? { ...p, likes: isLiked ? Math.max(0, p.likes - 1) : p.likes + 1 } : p));
+      setAllPosts(updated);
+    } else {
+      const updated = allReels.map(r => (r.id === id ? { ...r, likes: isLiked ? Math.max(0, r.likes - 1) : r.likes + 1 } : r));
+      setAllReels(updated);
+    }
+
+    userLikes[id] = !isLiked;
+    safeSet(likeKey, userLikes);
+  }, [currentUser, allPosts, allReels]);
+
+  const isLikedByUser = useCallback((id) => {
+    if (!currentUser) return false;
+    const likeKey = `${currentUser.username}_likes`;
+    const userLikes = safeGet(likeKey, {});
+    return !!userLikes[id];
+  }, [currentUser]);
+
+  const getUserVerifiedStatus = useCallback((usernameToCheck) => {
+    const users = safeGet('allUsers', []);
+    const u = users.find(x => x.username === usernameToCheck);
+    return !!u?.verified;
+  }, []);
+
+  const handleAddContent = useCallback(() => {
+    if (!currentUser) {
+      window.alert('سجّل الدخول أولاً');
+      return;
+    }
+    if (!newPost.caption.trim() || !newPost.image.trim()) {
+      window.alert('اكمل الحقول (صورة و/أو تعليق)');
+      return;
+    }
+    const content = {
+      id: Date.now(),
+      username: currentUser.username,
+      image: newPost.image,
+      caption: newPost.caption,
+      likes: 0,
+      comments: 0,
+      createdAt: new Date().toISOString()
+    };
+    if (newPost.type === 'reel') {
+      setAllReels(prev => [content, ...prev]);
+      setActiveTab('reels');
+    } else {
+      setAllPosts(prev => [content, ...prev]);
+      setActiveTab('home');
+    }
+    setNewPost({ caption: '', image: '', type: 'post' });
+  }, [currentUser, newPost]);
+
+  const getUserPosts = useCallback(() => {
+    if (!currentUser) return [];
+    return allPosts.filter(p => p.username === currentUser.username);
+  }, [allPosts, currentUser]);
+
+  // UI helpers
+  const safeImageProps = {
+    onError: (e) => {
+      e.currentTarget.onerror = null;
+      e.currentTarget.style.display = 'none';
+      // could add placeholder sibling if wanted
+    }
+  };
+
+  // Render login/register when no currentUser
+  if (!currentUser) {
+    return (
+      <div className="max-w-md mx-auto bg-white min-h-screen flex items-center justify-center p-6" dir="rtl">
+        <div className="w-full">
+          <h1 className="text-4xl font-bold text-center mb-8" style={{ fontFamily: 'cursive' }}>Instagram</h1>
+
+          <div className="mb-4 text-center">
+            <button
+              onClick={() => setLoginStep(prev => (prev === 'login' ? 'email' : 'login'))}
+              className="text-blue-500 text-sm"
+            >
+              {loginStep === 'login' ? 'إنشاء حساب جديد' : 'لديك حساب؟ تسجيل الدخول'}
+            </button>
+          </div>
+
+          {loginStep === 'login' && (
+            <div className="space-y-4">
+              <input
+                type="text"
+                placeholder="اسم المستخدم"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+              />
+              <input
+                type="password"
+                placeholder="كلمة المرور"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+              />
+              <button
+                onClick={handleLogin}
+                className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold"
+              >
+                تسجيل الدخول
+              </button>
+            </div>
+          )}
+
+          {loginStep === 'email' && (
+            <div className="space-y-4">
+              <input
+                type="email"
+                placeholder="البريد الإلكتروني"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+              />
+              <button
+                onClick={handleSendCode}
+                className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold"
+              >
+                إرسال كود التحقق
+              </button>
+            </div>
+          )}
+
+          {loginStep === 'code' && (
+            <div className="space-y-4">
+              <p className="text-center text-gray-600 mb-4">أدخل الكود المرسل إلى {email}</p>
+              <input
+                type="text"
+                placeholder="كود التحقق"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                maxLength={6}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50 text-center text-2xl tracking-widest"
+              />
+              <button
+                onClick={handleVerifyCode}
+                className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold"
+              >
+                تحقق
+              </button>
+            </div>
+          )}
+
+          {loginStep === 'register' && (
+            <div className="space-y-4">
+              <p className="text-center text-green-600 mb-4">✓ تم التحقق</p>
+              <input
+                type="text"
+                placeholder="اسم المستخدم"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+              />
+              <input
+                type="password"
+                placeholder="كلمة المرور"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+              />
+              <button
+                onClick={handleRegister}
+                className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold"
+              >
+                إنشاء الحساب
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Main app UI when logged in
+  return (
+    <div className="max-w-md mx-auto bg-black text-white min-h-screen" dir="rtl">
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 rounded-lg p-6 w-full max-w-sm">
+            <h2 className="text-xl font-bold mb-4">الإعدادات</h2>
+
+            <div className="space-y-4 mb-6">
+              <button
+                onClick={handleLogout}
+                className="w-full bg-red-500 py-2 rounded-lg"
+              >
+                تسجيل الخروج
+              </button>
+            </div>
+
+            <div className="border-t border-gray-700 pt-4">
+              <h3 className="font-bold mb-3">إدارة التوثيق (أدمن فقط)</h3>
+              <input
+                type="text"
+                placeholder="اسم المستخدم للتوثيق"
+                value={verifyUsername}
+                onChange={(e) => setVerifyUsername(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 rounded mb-2"
+              />
+              <input
+                type="password"
+                placeholder="كلمة مرور الأدمن"
+                value={adminPass}
+                onChange={(e) => setAdminPass(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-800 rounded mb-2"
+              />
+              <button
+                onClick={handleVerifyUser}
+                className="w-full bg-blue-500 py-2 rounded"
+              >
+                توثيق/إلغاء التوثيق
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowSettings(false)}
+              className="w-full bg-gray-700 py-2 rounded mt-4"
+            >
+              إغلاق
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="sticky top-0 bg-black border-b border-gray-800 px-4 py-3 z-10 flex items-center justify-between">
+        <h1 className="text-2xl font-bold" style={{ fontFamily: 'cursive' }}>Instagram</h1>
+        <Settings className="w-6 h-6 cursor-pointer" onClick={() => setShowSettings(true)} />
+      </div>
+
+      {/* Content */}
+      <div className="pb-16">
+        {activeTab === 'home' && (
+          <div>
+            {/* Stories */}
+            <div className="flex gap-4 px-4 py-3 overflow-x-auto border-b border-gray-800">
+              <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-yellow-400 to-pink-600 p-0.5">
+                  <div className="w-full h-full rounded-full bg-black p-0.5">
+                    <div className="w-full h-full rounded-full bg-gray-800 flex items-center justify-center">
+                      <Camera className="w-6 h-6" />
+                    </div>
+                  </div>
+                </div>
+                <span className="text-xs">قصتك</span>
+              </div>
+            </div>
+
+            {/* Posts */}
+            {allPosts.length === 0 ? (
+              <div className="text-center py-20 text-gray-500">
+                <p className="text-xl mb-2">لا توجد منشورات بعد</p>
+                <p className="text-sm">كن أول من ينشر!</p>
+              </div>
+            ) : (
+              <div>
+                {allPosts.map(post => (
+                  <div key={post.id} className="border-b border-gray-800 mb-4">
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-yellow-400 to-pink-600 p-0.5">
+                          <div className="w-full h-full rounded-full bg-black p-0.5">
+                            <div className="w-full h-full rounded-full bg-gray-800 flex items-center justify-center text-xl">
+                              👤
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <p className="font-semibold text-sm">{post.username}</p>
+                          {getUserVerifiedStatus(post.username) && (
+                            <CheckCircle className="w-4 h-4 text-blue-500" />
+                          )}
+                        </div>
+                      </div>
+                      <MoreHorizontal className="w-5 h-5" />
+                    </div>
+
+                    {post.image ? (
+                      <img
+                        src={post.image}
+                        alt="post"
+                        className="w-full aspect-square object-cover"
+                        {...safeImageProps}
+                      />
+                    ) : (
+                      <FallbackImage className="w-full aspect-square" />
+                    )}
+
+                    <div className="px-4 py-3">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-4">
+                          <IconButton onClick={() => handleLike(post.id, 'post')} title="إعجاب">
+                            <Heart
+                              className={`w-7 h-7 cursor-pointer ${isLikedByUser(post.id) ? 'fill-red-500 text-red-500' : ''}`}
+                            />
+                          </IconButton>
+                          <MessageCircle className="w-7 h-7 cursor-pointer" />
+                          <Send className="w-7 h-7 cursor-pointer" />
+                        </div>
+                        <Bookmark className="w-6 h-6 cursor-pointer" />
+                      </div>
+                      <p className="font-semibold text-sm mb-1">{post.likes.toLocaleString('ar')} إعجاب</p>
+                      <p className="text-sm">
+                        <span className="font-semibold ml-2">{post.username}</span>
+                        {post.caption}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-2">{timeAgo(post.createdAt)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'reels' && (
+          <div className="h-screen overflow-y-scroll snap-y snap-mandatory">
+            {allReels.length === 0 ? (
+              <div className="h-screen flex items-center justify-center text-gray-500">
+                <div className="text-center">
+                  <Play className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p className="text-xl mb-2">لا توجد ريلز بعد</p>
+                  <p className="text-sm">كن أول من ينشر ريلز!</p>
+                </div>
+              </div>
+            ) : (
+              allReels.map((reel) => (
+                <div key={reel.id} className="relative h-screen snap-start snap-always">
+                  {reel.image ? (
+                    <img src={
